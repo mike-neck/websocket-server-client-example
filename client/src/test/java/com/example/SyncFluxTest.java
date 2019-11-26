@@ -2,9 +2,11 @@ package com.example;
 
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -52,6 +54,44 @@ class SyncFluxTest {
     @Override
     public String toString() {
       return String.format("[%d, %d]", left, right);
+    }
+  }
+
+  @Test
+  void fluxCopy() throws Exception {
+    final AtomicBoolean finished = new AtomicBoolean(false);
+    final Flux<String> flux = Flux.<String>create(sink -> {
+      if (finished.get()) {
+        sink.error(new IllegalStateException("finished flux"));
+        sink.complete();
+      } else {
+        Flux.interval(Duration.ofMillis(300L))
+            .take(12)
+            .map(l -> (l % 3 == 0) ? "foo" : (l % 3 == 1) ? "bar" : "baz")
+            .doOnTerminate(sink::complete)
+            .doOnTerminate(() -> finished.set(true))
+            .subscribe(sink::next);
+      }
+    });
+
+    final CountDownLatch latch = new CountDownLatch(2);
+
+    final Mono<Void> single = flux.take(1L)
+        .single()
+        .doOnTerminate(latch::countDown)
+        .doOnNext(item -> logger.info("single : {}", item))
+        .then();
+
+    final Mono<Void> multi = flux.skip(1L)
+        .map(item -> item + "-" + item.length())
+        .doOnTerminate(latch::countDown)
+        .doOnNext(item -> logger.info("multi: {}", item))
+        .then();
+
+    final Disposable disposable = Mono.just("").then(single).then(multi).then()
+        .subscribe();
+    try (AutoCloseable ignored = disposable::dispose) {
+      latch.await();
     }
   }
 }
